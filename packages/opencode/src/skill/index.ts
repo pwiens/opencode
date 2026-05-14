@@ -20,6 +20,8 @@ import { isRecord } from "@/util/record"
 const log = Log.create({ service: "skill" })
 const CLAUDE_EXTERNAL_DIR = ".claude"
 const AGENTS_EXTERNAL_DIR = ".agents"
+const COPILOT_GLOBAL_DIR = ".copilot"
+const COPILOT_PROJECT_DIR = ".github"
 const EXTERNAL_SKILL_PATTERN = "skills/**/SKILL.md"
 const OPENCODE_SKILL_PATTERN = "{skill,skills}/**/SKILL.md"
 const SKILL_PATTERN = "**/SKILL.md"
@@ -188,6 +190,22 @@ const discoverSkills = Effect.fnUntraced(function* (
       .pipe(Effect.catch(() => Effect.succeed([] as string[])))
 
     for (const root of upDirs) {
+      yield* scan(state, root, EXTERNAL_SKILL_PATTERN, { dot: true, scope: "project" })
+    }
+  }
+
+  const copilot = yield* config.getCopilot()
+  if (copilot.skills) {
+    const globalRoot = path.join(global.home, COPILOT_GLOBAL_DIR)
+    if (yield* fsys.isDir(globalRoot)) {
+      yield* scan(state, globalRoot, EXTERNAL_SKILL_PATTERN, { dot: true, scope: "global" })
+    }
+
+    const githubDirs = yield* fsys
+      .up({ targets: [COPILOT_PROJECT_DIR], start: directory, stop: worktree })
+      .pipe(Effect.catch(() => Effect.succeed([] as string[])))
+
+    for (const root of githubDirs) {
       yield* scan(state, root, EXTERNAL_SKILL_PATTERN, { dot: true, scope: "project" })
     }
   }
