@@ -2,6 +2,11 @@ import path from "path"
 import { Schema } from "effect"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Effect } from "effect"
+import { isRecord } from "@/util/record"
+import { ConfigMCP } from "./mcp"
+import * as Log from "@opencode-ai/core/util/log"
+
+const log = Log.create({ service: "config-copilot" })
 
 export const Resolved = Schema.Struct({
   enabled: Schema.Boolean,
@@ -98,3 +103,113 @@ export function resolve(cfg: Info | undefined, detected: boolean): Resolved {
 }
 
 export * as ConfigCopilot from "./copilot"
+
+// Parse one MCP-server file in either the Copilot CLI shape
+// ({"mcpServers": {...}}) or the VS Code shape ({"servers": {...}}).
+// Returns translated opencode MCP entries keyed by server name.
+export function parseMcpFile(text: string, source: string): Record<string, ConfigMCP.Info> {
+  let data: unknown
+  try {
+    data = JSON.parse(text)
+  } catch (err) {
+    log.warn("failed to parse mcp config", { source, error: String(err) })
+    return {}
+  }
+  if (!isRecord(data)) return {}
+  const servers = isRecord(data.mcpServers)
+    ? data.mcpServers
+    : isRecord(data.servers)
+      ? data.servers
+      : undefined
+  if (!servers) return {}
+
+  const result: Record<string, ConfigMCP.Info> = {}
+  for (const [name, raw] of Object.entries(servers)) {
+    if (!isRecord(raw)) continue
+    const translated = translateMcpEntry(raw, `${source}:${name}`)
+    if (translated) result[name] = translated
+  }
+  return result
+}
+
+function translateMcpEntry(raw: Record<string, unknown>, source: string): ConfigMCP.Info | undefined {
+  const isRemote =
+    raw.type === "http" || raw.type === "sse" || raw.type === "remote" || (typeof raw.url === "string" && !raw.command)
+
+  if (isRemote) {
+    if (typeof raw.url !== "string") {
+      log.warn("mcp remote entry missing url", { source })
+      return undefined
+    }
+    let headers: Record<string, string> | undefined
+    if (isRecord(raw.headers)) {
+      headers = {}
+      for (const [k, v] of Object.entries(raw.headers)) {
+        if (typeof v === "string") headers[k] = v
+      }
+    }
+    return {
+      type: "remote",
+      url: raw.url,
+      ...(headers ? { headers } : {}),
+      ...(typeof raw.enabled === "boolean" ? { enabled: raw.enabled } : {}),
+    }
+  }
+
+  if (typeof raw.command !== "string") {
+    log.warn("mcp local entry missing command", { source })
+    return undefined
+  }
+  const args = Array.isArray(raw.args) ? raw.args.filter((a): a is string => typeof a === "string") : []
+  const envSrc = isRecord(raw.env) ? raw.env : isRecord(raw.environment) ? raw.environment : undefined
+  let environment: Record<string, string> | undefined
+  if (envSrc) {
+    environment = {}
+    for (const [k, v] of Object.entries(envSrc)) {
+      if (typeof v === "string") environment[k] = v
+    }
+  }
+  return {
+    type: "local",
+    command: [raw.command, ...args],
+    ...(environment ? { environment } : {}),
+    ...(typeof raw.enabled === "boolean" ? { enabled: raw.enabled } : {}),
+  }
+}
+
+// Discover and merge all Copilot CLI MCP servers visible to the current instance.
+// Order (later wins on conflict): ~/.copilot/mcp-config.json -> .github/mcp.json (walked up) -> .vscode/mcp.json (walked up).
+// Existing opencode mcp config still wins over these — see the merge site in config.ts.
+export const loadMcpServers = Effect.fn("ConfigCopilot.loadMcpServers")(function* (params: {
+  home: string
+  start: string
+  stop: string
+}) {
+  const afs = yield* AppFileSystem.Service
+  const merged: Record<string, ConfigMCP.Info> = {}
+
+  const tryRead = Effect.fn("ConfigCopilot.tryRead")(function* (filepath: string) {
+    if (!(yield* afs.existsSafe(filepath))) return
+    const text = yield* afs.readFileStringSafe(filepath).pipe(Effect.catch(() => Effect.succeed("")))
+    if (!text) return
+    Object.assign(merged, parseMcpFile(text, filepath))
+  })
+
+  yield* tryRead(path.join(params.home, ".copilot", "mcp-config.json"))
+
+  const githubDirs = yield* afs
+    .up({ targets: [".github"], start: params.start, stop: params.stop })
+    .pipe(Effect.catch(() => Effect.succeed([] as string[])))
+  for (const dir of githubDirs) {
+    yield* tryRead(path.join(dir, "mcp.json"))
+  }
+
+  const vscodeDirs = yield* afs
+    .up({ targets: [".vscode"], start: params.start, stop: params.stop })
+    .pipe(Effect.catch(() => Effect.succeed([] as string[])))
+  for (const dir of vscodeDirs) {
+    yield* tryRead(path.join(dir, "mcp.json"))
+  }
+
+  return merged
+})

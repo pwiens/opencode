@@ -631,6 +631,28 @@ export const layer = Layer.effect(
           yield* mergePluginOrigins(dir, list)
         }
 
+        // Resolve copilot loading flags once after all opencode config sources have been merged,
+        // so per-subsystem overrides set in any layer (global, project .opencode, env) take effect.
+        const detectedCopilot = yield* ConfigCopilot.detect(ctx.directory, ctx.worktree).pipe(
+          Effect.catch(() => Effect.succeed(false)),
+        )
+        const resolvedCopilot = ConfigCopilot.resolve(
+          result.copilot as ConfigCopilot.Info | undefined,
+          detectedCopilot,
+        )
+
+        if (resolvedCopilot.mcp) {
+          const fromCopilot = yield* ConfigCopilot.loadMcpServers({
+            home: os.homedir(),
+            start: ctx.directory,
+            stop: ctx.worktree,
+          }).pipe(Effect.catch(() => Effect.succeed({} as Record<string, ConfigMCP.Info>)))
+          if (Object.keys(fromCopilot).length > 0) {
+            // Existing opencode mcp config wins so a user can override or disable an imported server.
+            result.mcp = { ...fromCopilot, ...(result.mcp ?? {}) }
+          }
+        }
+
         if (process.env.OPENCODE_CONFIG_CONTENT) {
           const source = "OPENCODE_CONFIG_CONTENT"
           const next = yield* loadConfig(process.env.OPENCODE_CONFIG_CONTENT, {
@@ -742,12 +764,7 @@ export const layer = Layer.effect(
         return {
           config: result,
           directories,
-          copilot: ConfigCopilot.resolve(
-            result.copilot as ConfigCopilot.Info | undefined,
-            yield* ConfigCopilot.detect(ctx.directory, ctx.worktree).pipe(
-              Effect.catch(() => Effect.succeed(false)),
-            ),
-          ),
+          copilot: resolvedCopilot,
           deps,
           consoleState: {
             consoleManagedProviders: Array.from(consoleManagedProviders),
