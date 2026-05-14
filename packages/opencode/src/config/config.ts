@@ -664,6 +664,17 @@ export const layer = Layer.effect(
           }
         }
 
+        if (resolvedCopilot.prompts) {
+          const githubDirs = yield* fs
+            .up({ targets: [".github"], start: ctx.directory, stop: ctx.worktree })
+            .pipe(Effect.catch(() => Effect.succeed([] as string[])))
+          for (const dir of githubDirs) {
+            const fromCopilot = yield* Effect.promise(() => ConfigCopilot.loadPrompts(dir))
+            // Existing opencode command config wins on key conflict.
+            result.command = mergeDeep(fromCopilot, result.command ?? {})
+          }
+        }
+
         if (process.env.OPENCODE_CONFIG_CONTENT) {
           const source = "OPENCODE_CONFIG_CONTENT"
           const next = yield* loadConfig(process.env.OPENCODE_CONFIG_CONTENT, {
