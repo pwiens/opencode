@@ -914,6 +914,20 @@ export type ServerConfig = {
   cors?: Array<string>
 }
 
+export type CopilotConfig =
+  | boolean
+  | {
+      /**
+       * Master switch for Copilot CLI integration. true=on, false=off, 'auto' (default)=enable when .github/copilot-instructions.md is found.
+       */
+      enabled?: boolean | "auto"
+      instructions?: boolean
+      skills?: boolean
+      mcp?: boolean
+      agents?: boolean
+      prompts?: boolean
+    }
+
 export type ReferenceConfigEntry =
   | string
   | {
@@ -1173,6 +1187,7 @@ export type Config = {
     paths?: Array<string>
     urls?: Array<string>
   }
+  copilot?: CopilotConfig
   reference?: ReferenceConfig
   watcher?: {
     ignore?: Array<string>
