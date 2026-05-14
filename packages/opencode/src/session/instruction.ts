@@ -108,6 +108,7 @@ export const layer: Layer.Layer<
 
     const systemPaths = Effect.fn("Instruction.systemPaths")(function* () {
       const config = yield* cfg.get()
+      const copilot = yield* cfg.getCopilot()
       const ctx = yield* InstanceState.context
       const paths = new Set<string>()
 
@@ -115,6 +116,13 @@ export const layer: Layer.Layer<
         if (yield* fs.existsSafe(file)) {
           paths.add(path.resolve(file))
           break
+        }
+      }
+
+      if (copilot.instructions) {
+        const globalCopilot = path.join(global.home, ".copilot", "copilot-instructions.md")
+        if (yield* fs.existsSafe(globalCopilot)) {
+          paths.add(path.resolve(globalCopilot))
         }
       }
 
@@ -128,6 +136,25 @@ export const layer: Layer.Layer<
             matches.forEach((item) => paths.add(path.resolve(item)))
             break
           }
+        }
+      }
+
+      if (copilot.instructions && !Flag.OPENCODE_DISABLE_PROJECT_CONFIG) {
+        const repoMatches = yield* fs.findUp(
+          path.join(".github", "copilot-instructions.md"),
+          ctx.directory,
+          ctx.worktree,
+        )
+        repoMatches.forEach((item) => paths.add(path.resolve(item)))
+
+        const githubDirs = yield* fs
+          .up({ targets: [".github"], start: ctx.directory, stop: ctx.worktree })
+          .pipe(Effect.catch(() => Effect.succeed([] as string[])))
+        for (const dir of githubDirs) {
+          const scoped = yield* fs
+            .glob("instructions/*.instructions.md", { cwd: dir, absolute: true, include: "file" })
+            .pipe(Effect.catch(() => Effect.succeed([] as string[])))
+          scoped.forEach((item) => paths.add(path.resolve(item)))
         }
       }
 
