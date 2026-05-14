@@ -4,6 +4,11 @@ import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Effect } from "effect"
 import { isRecord } from "@/util/record"
 import { ConfigMCP } from "./mcp"
+import { ConfigAgent } from "./agent"
+import { ConfigCommand } from "./command"
+import { ConfigMarkdown } from "./markdown"
+import { ConfigParse } from "./parse"
+import { Glob } from "@opencode-ai/core/util/glob"
 import * as Log from "@opencode-ai/core/util/log"
 
 const log = Log.create({ service: "config-copilot" })
@@ -213,3 +218,117 @@ export const loadMcpServers = Effect.fn("ConfigCopilot.loadMcpServers")(function
 
   return merged
 })
+
+// Strip .agent.md / .prompt.md double extension; fall back to single extension strip.
+function stripCopilotExt(filename: string, expected: ".agent.md" | ".prompt.md"): string {
+  if (filename.endsWith(expected)) return filename.slice(0, -expected.length)
+  const ext = path.extname(filename)
+  return ext.length ? filename.slice(0, -ext.length) : filename
+}
+
+// Convert a Copilot agent frontmatter into opencode's AgentSchema shape.
+// Differences handled here:
+//   - Copilot's tools: string[] allowlist -> opencode tools: Record<string, true> (mapped to permission via existing normalize)
+//   - Copilot's model: string[] fallback list -> opencode model: first element only (rest is dropped, lossy)
+//   - Copilot's handoffs field is dropped (opencode has no equivalent)
+function normalizeCopilotAgentFrontmatter(data: Record<string, unknown>): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...data }
+
+  if (Array.isArray(next.tools)) {
+    const map: Record<string, boolean> = {}
+    for (const tool of next.tools) {
+      if (typeof tool === "string") map[tool] = true
+    }
+    next.tools = map
+  }
+
+  if (Array.isArray(next.model)) {
+    const first = next.model.find((m): m is string => typeof m === "string")
+    if (first) next.model = first
+    else delete next.model
+  }
+
+  // Drop fields opencode doesn't understand to avoid schema rejection (StructWithRest tolerates them but they're
+  // misleading if persisted).
+  delete next.handoffs
+
+  return next
+}
+
+// Load .github/agents/*.agent.md from a single directory and return them keyed by name.
+// Name is the filename minus the .agent.md extension (frontmatter "name" wins if provided).
+export async function loadAgents(githubDir: string): Promise<Record<string, ConfigAgent.Info>> {
+  const result: Record<string, ConfigAgent.Info> = {}
+  const items = await Glob.scan("agents/**/*.agent.md", {
+    cwd: githubDir,
+    absolute: true,
+    dot: true,
+    symlink: true,
+  })
+  for (const item of items) {
+    const md = await ConfigMarkdown.parse(item).catch((err) => {
+      log.warn("failed to parse copilot agent", { path: item, error: String(err) })
+      return undefined
+    })
+    if (!md) continue
+
+    const filename = path.basename(item)
+    const baseName = stripCopilotExt(filename, ".agent.md")
+    const data = isRecord(md.data) ? md.data : {}
+    const normalized = normalizeCopilotAgentFrontmatter(data)
+    const name = typeof normalized.name === "string" && normalized.name.length > 0 ? normalized.name : baseName
+
+    try {
+      const config = {
+        ...normalized,
+        name,
+        prompt: md.content.trim(),
+      }
+      result[name] = ConfigParse.schema(ConfigAgent.Info, config, item)
+    } catch (err) {
+      log.warn("failed to validate copilot agent", { path: item, error: String(err) })
+    }
+  }
+  return result
+}
+
+// Load .github/prompts/*.prompt.md from a single directory and return them keyed by name as ConfigCommand entries.
+// Frontmatter description carries over; the markdown body becomes the command template.
+export async function loadPrompts(githubDir: string): Promise<Record<string, ConfigCommand.Info>> {
+  const result: Record<string, ConfigCommand.Info> = {}
+  const items = await Glob.scan("prompts/**/*.prompt.md", {
+    cwd: githubDir,
+    absolute: true,
+    dot: true,
+    symlink: true,
+  })
+  for (const item of items) {
+    const md = await ConfigMarkdown.parse(item).catch((err) => {
+      log.warn("failed to parse copilot prompt", { path: item, error: String(err) })
+      return undefined
+    })
+    if (!md) continue
+
+    const filename = path.basename(item)
+    const name = stripCopilotExt(filename, ".prompt.md")
+    const data = isRecord(md.data) ? md.data : {}
+
+    const config: Record<string, unknown> = {
+      template: md.content.trim(),
+    }
+    if (typeof data.description === "string") config.description = data.description
+    if (typeof data.agent === "string") config.agent = data.agent
+    if (typeof data.model === "string") config.model = data.model
+    else if (Array.isArray(data.model)) {
+      const first = data.model.find((m): m is string => typeof m === "string")
+      if (first) config.model = first
+    }
+
+    try {
+      result[name] = ConfigParse.schema(ConfigCommand.Info, config, item)
+    } catch (err) {
+      log.warn("failed to validate copilot prompt", { path: item, error: String(err) })
+    }
+  }
+  return result
+}

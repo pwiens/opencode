@@ -653,6 +653,17 @@ export const layer = Layer.effect(
           }
         }
 
+        if (resolvedCopilot.agents) {
+          const githubDirs = yield* fs
+            .up({ targets: [".github"], start: ctx.directory, stop: ctx.worktree })
+            .pipe(Effect.catch(() => Effect.succeed([] as string[])))
+          for (const dir of githubDirs) {
+            const fromCopilot = yield* Effect.promise(() => ConfigCopilot.loadAgents(dir))
+            // Existing opencode agent config wins so user overrides under .opencode/ aren't clobbered.
+            result.agent = mergeDeep(fromCopilot, result.agent ?? {})
+          }
+        }
+
         if (process.env.OPENCODE_CONFIG_CONTENT) {
           const source = "OPENCODE_CONFIG_CONTENT"
           const next = yield* loadConfig(process.env.OPENCODE_CONFIG_CONTENT, {
