@@ -24,6 +24,7 @@ import { NonNegativeInt, PositiveInt, type DeepMutable } from "@opencode-ai/core
 import { ConfigAgent } from "./agent"
 import { ConfigAttachment } from "./attachment"
 import { ConfigCommand } from "./command"
+import { ConfigCopilot } from "./copilot"
 import { ConfigFormatter } from "./formatter"
 import { ConfigLayout } from "./layout"
 import { ConfigLSP } from "./lsp"
@@ -131,6 +132,10 @@ export const Info = Schema.Struct({
     description: "Command configuration, see https://opencode.ai/docs/commands",
   }),
   skills: Schema.optional(ConfigSkills.Info).annotate({ description: "Additional skill folder paths" }),
+  copilot: Schema.optional(ConfigCopilot.Info).annotate({
+    description:
+      "GitHub Copilot CLI compatibility. When enabled, loads instructions, skills, MCP servers, agents, and prompts from ~/.copilot/ and .github/. Defaults to auto-detect when .github/copilot-instructions.md is present.",
+  }),
   reference: Schema.optional(ConfigReference.Info).annotate({
     description: "Named git or local directory references that can be mentioned as @alias or @alias/path",
   }),
@@ -302,6 +307,7 @@ export type Info = DeepMutable<Schema.Schema.Type<typeof Info>> & {
 type State = {
   config: Info
   directories: string[]
+  copilot: ConfigCopilot.Resolved
   deps: Fiber.Fiber<void, never>[]
   consoleState: ConsoleState
 }
@@ -309,6 +315,7 @@ type State = {
 export interface Interface {
   readonly get: () => Effect.Effect<Info>
   readonly getGlobal: () => Effect.Effect<Info>
+  readonly getCopilot: () => Effect.Effect<ConfigCopilot.Resolved>
   readonly getConsoleState: () => Effect.Effect<ConsoleState>
   readonly update: (config: Info) => Effect.Effect<void>
   readonly updateGlobal: (config: Info) => Effect.Effect<{ info: Info; changed: boolean }>
@@ -735,6 +742,12 @@ export const layer = Layer.effect(
         return {
           config: result,
           directories,
+          copilot: ConfigCopilot.resolve(
+            result.copilot as ConfigCopilot.Info | undefined,
+            yield* ConfigCopilot.detect(ctx.directory, ctx.worktree).pipe(
+              Effect.catch(() => Effect.succeed(false)),
+            ),
+          ),
           deps,
           consoleState: {
             consoleManagedProviders: Array.from(consoleManagedProviders),
@@ -762,6 +775,10 @@ export const layer = Layer.effect(
 
     const getConsoleState = Effect.fn("Config.getConsoleState")(function* () {
       return yield* InstanceState.use(state, (s) => s.consoleState)
+    })
+
+    const getCopilot = Effect.fn("Config.getCopilot")(function* () {
+      return yield* InstanceState.use(state, (s) => s.copilot)
     })
 
     const waitForDependencies = Effect.fn("Config.waitForDependencies")(function* () {
@@ -811,6 +828,7 @@ export const layer = Layer.effect(
     return Service.of({
       get,
       getGlobal,
+      getCopilot,
       getConsoleState,
       update,
       updateGlobal,

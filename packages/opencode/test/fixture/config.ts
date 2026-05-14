@@ -6,6 +6,15 @@ export function make(overrides: Partial<Config.Interface> = {}) {
   return Config.Service.of({
     get: () => Effect.succeed({}),
     getGlobal: () => Effect.succeed({}),
+    getCopilot: () =>
+      Effect.succeed({
+        enabled: false,
+        instructions: false,
+        skills: false,
+        mcp: false,
+        agents: false,
+        prompts: false,
+      }),
     getConsoleState: () => Effect.succeed(emptyConsoleState),
     update: () => Effect.void,
     updateGlobal: (config) => Effect.succeed({ info: config, changed: false }),
