@@ -506,7 +506,40 @@ export const layer = Layer.effect(
         }
 
         if (!replay) {
-          const info = yield* provider.getProvider(userMessage.model.providerID)
+          // Guard against the auto-compaction infinite loop reported upstream as
+          // anomalyco/opencode#15533: if the assistant naturally ended its turn
+          // (finish === "stop") and we still inject a synthetic "Continue…",
+          // the agent responds, the context overflows again, compaction fires
+          // again, and we loop. Affects Claude via Copilot especially.
+          //
+          // Only inject when ALL hold:
+          //   1. The last non-summary assistant was mid-tool-use
+          //      (finish in "tool-calls" / "unknown" / unset).
+          //   2. We haven't already injected a synthetic continue since the
+          //      user's last real text message — caps the loop at one turn.
+          const lastNonSummaryAssistant = [...input.messages]
+            .reverse()
+            .find((m) => m.info.role === "assistant" && !(m.info as MessageV2.Assistant).summary)?.info as
+            | MessageV2.Assistant
+            | undefined
+
+          const wasUsingTools =
+            !lastNonSummaryAssistant?.finish ||
+            lastNonSummaryAssistant.finish === "tool-calls" ||
+            lastNonSummaryAssistant.finish === "unknown"
+
+          const lastUserWithText = [...input.messages]
+            .reverse()
+            .find((m) => m.info.role === "user" && m.parts.some((p) => p.type === "text"))
+          const alreadyContinued = lastUserWithText?.parts.some(
+            (p) => p.type === "text" && "synthetic" in p && (p as MessageV2.TextPart).synthetic === true,
+          )
+
+          if (!wasUsingTools || alreadyContinued) {
+            // Skip the synthetic continue — let the session loop exit and wait
+            // for real user input.
+          } else {
+            const info = yield* provider.getProvider(userMessage.model.providerID)
           if (
             (yield* plugin.trigger(
               "experimental.compaction.autocontinue",
@@ -556,6 +589,7 @@ export const layer = Layer.effect(
                 end: Date.now(),
               },
             })
+          }
           }
         }
       }
